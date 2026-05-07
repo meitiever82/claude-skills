@@ -1,0 +1,61 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <!-- ============================================================ -->
+  <!-- ROS2 Humble package.xml template (format 3)                  -->
+  <!-- Replace ${PKG_NAME}, ${VERSION}, ${MAINTAINER_*}, ${LICENSE} -->
+  <!-- Add/remove <depend> entries to match your CMakeLists.txt     -->
+  <!-- ============================================================ -->
+
+  <name>${PKG_NAME}</name>
+  <version>${VERSION}</version>
+  <description>${DESCRIPTION}</description>
+  <maintainer email="${MAINTAINER_EMAIL}">${MAINTAINER_NAME}</maintainer>
+  <license>${LICENSE}</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- Core ROS2 -->
+  <depend>rclcpp</depend>
+
+  <!-- Common message packages (uncomment what you need) -->
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <!-- <depend>visualization_msgs</depend> -->
+  <!-- <depend>diagnostic_msgs</depend>    -->
+
+  <!-- TF2 (replace ROS1 'tf') -->
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <!-- <depend>tf2_eigen</depend> -->
+
+  <!-- Third-party libs commonly used in robotics nodes -->
+  <!-- <depend>eigen</depend> -->
+  <!-- <depend>pcl_conversions</depend> -->
+  <!-- <depend>libpcl-all-dev</depend> -->
+
+  <!-- For composable nodes / nodelet ports -->
+  <!-- <depend>rclcpp_components</depend> -->
+
+  <!-- For actions -->
+  <!-- <depend>rclcpp_action</depend> -->
+  <!-- <depend>action_msgs</depend>   -->
+
+  <!-- For pluginlib-based plugin packages -->
+  <!-- <depend>pluginlib</depend> -->
+
+  <!-- For accessing package share dirs in C++ -->
+  <!-- <depend>ament_index_cpp</depend> -->
+
+  <!-- Tests (uncomment to enable linters and gtest) -->
+  <!-- <test_depend>ament_lint_auto</test_depend>          -->
+  <!-- <test_depend>ament_lint_common</test_depend>        -->
+  <!-- <test_depend>ament_cmake_gtest</test_depend>        -->
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

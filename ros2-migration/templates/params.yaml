@@ -1,0 +1,76 @@
+# =============================================================================
+# ROS2 parameter file template.
+# Save as <pkg>/config/params.yaml and reference from your launch file:
+#   parameters=[PathJoinSubstitution([pkg, 'config', 'params.yaml'])]
+#
+# Top-level key MUST match the node name as launched (Node(name='...')) OR be
+# /** as a wildcard for "applies to every node loading this file".
+# =============================================================================
+
+# Wildcard form — applies to any node loading this file:
+/**:
+  ros__parameters:
+    use_sim_time: false
+
+# Per-node form — replaces the above if your node name is fixed:
+my_node:
+  ros__parameters:
+    use_sim_time: false
+
+    # ---- Generic flags ----------------------------------------------------
+    verbose: false
+
+    # ---- Topic remappings (these are NOT remappings; they are values your
+    # node reads via declare_parameter / get_parameter) ---------------------
+    imu_topic: "/imu/data"
+    output_topic: "/imu/filtered"
+
+    # ---- Scalars ----------------------------------------------------------
+    scale: 1.0
+    rate_hz: 50
+
+    # ---- Arrays -----------------------------------------------------------
+    covariance: [0.01, 0.0, 0.0,
+                 0.0, 0.01, 0.0,
+                 0.0, 0.0, 0.01]
+
+    # ---- Nested groups (use '.' in declare_parameter) ---------------------
+    # In code:
+    #   declare_parameter<double>("Odometry.cov_gyr", 0.1);
+    #   get_parameter("Odometry.cov_gyr").as_double();
+    Odometry:
+      cov_gyr: 0.1
+      cov_acc: 1.0
+      rdw_gyr: 0.0001
+      rdw_acc: 0.0001
+      down_size: 0.1
+      voxel_size: 1.0
+      min_eigen_value: 0.0025
+      degrade_bound: 10
+      point_notime: 0
+
+    LocalBA:
+      win_size: 10
+      max_layer: 2
+      cov_gyr: 0.01
+      cov_acc: 1.0
+      rdw_gyr: 0.0001
+      rdw_acc: 0.0001
+      min_ba_point: 1
+      plane_eigen_value_thre: [4.0, 4.0, 4.0, 4.0]
+      imu_coef: 0.0001
+      thread_num: 5
+
+    Loop:
+      jud_default: 0.5
+      icp_eigval: 10.0
+      ratio_drift: 0.01
+      curr_halt: 10
+      prev_halt: 10
+      isHighFly: 0
+
+    GBA:
+      voxel_size: 2.0
+      min_eigen_value: 0.1
+      eigen_value_array: [4.0, 4.0, 4.0, 4.0]
+      total_max_iter: 6
