@@ -12,29 +12,71 @@ SRC="${1:?usage: scaffold_cmakelists.sh <ros1_CMakeLists.txt>}"
 PROJ=$(grep -oE 'project\([A-Za-z0-9_]+\)' "$SRC" | head -n1 | sed -E 's/project\(([^)]+)\)/\1/')
 [[ -z "$PROJ" ]] && PROJ="my_pkg"
 
-mapfile -t COMPS < <(grep -A 20 'find_package(catkin' "$SRC" \
-                       | tr -d '()' | tr ',' ' ' \
-                       | tr ' ' '\n' \
-                       | sed -E 's/REQUIRED|COMPONENTS|find_package|catkin//g' \
-                       | grep -E '^[a-z][a-z0-9_]+$' || true)
+# ---- Extract components from find_package(catkin REQUIRED COMPONENTS ...) -
+# Strict mode: only read text BETWEEN the 'find_package(catkin ...' line and the
+# matching ')'. Stops at the first ')' to avoid swallowing later commands.
+COMPS_RAW=$(awk '
+  /find_package\([[:space:]]*catkin/ { capture=1; sub(/^.*find_package\([[:space:]]*catkin/, ""); }
+  capture {
+    line = $0
+    if (index(line, ")") > 0) {
+      sub(/\).*$/, "", line); print line; capture=0
+    } else {
+      print line
+    }
+  }' "$SRC")
 
+mapfile -t COMPS < <(printf '%s\n' "$COMPS_RAW" \
+                       | tr ' ,' '\n\n' \
+                       | sed -E 's/REQUIRED|COMPONENTS//g' \
+                       | grep -E '^[a-z][a-z0-9_]+$' \
+                       | sort -u || true)
+
+# ---- Extract executables AND their full source list ------------------------
+# add_executable(<name> <src1> <src2> ...)
 mapfile -t EXES < <(grep -oE 'add_executable\([A-Za-z0-9_]+' "$SRC" \
                       | sed -E 's/add_executable\(//')
 
-# Map ROS1 components to ROS2 equivalents
+# For each exe, capture the full body until the closing ')'
+declare -A EXE_SRCS
+for exe in "${EXES[@]}"; do
+  body=$(awk -v target="$exe" '
+    $0 ~ "add_executable\\("target"[[:space:]]*$|add_executable\\("target"[[:space:]]" {
+      capture=1; sub(/^.*add_executable\([^[:space:])]*[[:space:]]*/, "");
+    }
+    capture {
+      line = $0
+      if (index(line, ")") > 0) {
+        sub(/\).*$/, "", line); print line; capture=0
+      } else { print line }
+    }' "$SRC")
+  # Clean: drop empty/whitespace-only entries, comments, ${...} variables.
+  srcs=$(printf '%s\n' "$body" | tr ' \t' '\n' \
+           | sed -E '/^\s*$/d; /^#/d; /^\$\{.*\}$/d' \
+           | tr '\n' ' ')
+  EXE_SRCS[$exe]="$srcs"
+done
+
+# ---- Map ROS1 components to ROS2 equivalents -------------------------------
 declare -A MAP=(
   [roscpp]="rclcpp"
-  [rospy]=""                   # python build, handled differently
+  [rospy]=""                   # python — handled by ament_python, drop from C++ deps
+  [roslib]="ament_index_cpp"
   [tf]="tf2 tf2_ros tf2_geometry_msgs"
   [actionlib]="rclcpp_action"
   [actionlib_msgs]="action_msgs"
   [nodelet]="rclcpp_components"
   [pcl_ros]="pcl_conversions"
+  [message_generation]="rosidl_default_generators"
+  [message_runtime]="rosidl_default_runtime"
+  [livox_ros_driver]="livox_ros_driver2"
+  [rosbag]="rosbag2_cpp"
 )
 declare -A ROS2_DEPS=()
 for c in "${COMPS[@]}"; do
-  m="${MAP[$c]:-}"
-  if [[ -n "$m" ]]; then
+  if [[ -v MAP[$c] ]]; then
+    m="${MAP[$c]}"
+    [[ -z "$m" ]] && continue                  # explicitly dropped (e.g. rospy)
     for d in $m; do ROS2_DEPS[$d]=1; done
   else
     ROS2_DEPS[$c]=1
@@ -42,8 +84,10 @@ for c in "${COMPS[@]}"; do
 done
 
 # Always include core
-ROS2_DEPS[ament_cmake]=1
 ROS2_DEPS[rclcpp]=1
+
+# Stable, sorted dep list for the ament_target_dependencies call
+mapfile -t SORTED_DEPS < <(printf '%s\n' "${!ROS2_DEPS[@]}" | sort)
 
 cat <<EOF
 # ============================================================
@@ -60,41 +104,51 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+# ---- ament + ROS2 dependencies --------------------------------------------
+find_package(ament_cmake REQUIRED)
 EOF
 
-for d in "${!ROS2_DEPS[@]}"; do
+for d in "${SORTED_DEPS[@]}"; do
   echo "find_package($d REQUIRED)"
 done
 
 cat <<'EOF'
 
+# ---- Third-party libraries (uncomment / adjust as needed) -----------------
+# find_package(Eigen3 3.3 REQUIRED NO_MODULE)
+# find_package(PCL 1.10 REQUIRED COMPONENTS common io)
+# find_package(GTSAM REQUIRED)
+
 # include_directories(include)
 
+# ---- Library (optional) ---------------------------------------------------
 # add_library(${PROJECT_NAME}_lib SHARED src/foo.cpp)
 # ament_target_dependencies(${PROJECT_NAME}_lib rclcpp ...)
 
+# ---- Executables ----------------------------------------------------------
 EOF
 
 for exe in "${EXES[@]}"; do
-  echo "add_executable($exe src/$exe.cpp)"
+  srcs="${EXE_SRCS[$exe]:-src/$exe.cpp}"
+  echo "add_executable($exe $srcs)"
   printf "ament_target_dependencies($exe"
-  for d in "${!ROS2_DEPS[@]}"; do
-    [[ "$d" == "ament_cmake" ]] && continue
+  for d in "${SORTED_DEPS[@]}"; do
     printf " $d"
   done
   echo ")"
+  echo "# target_link_libraries($exe \${PCL_LIBRARIES} Eigen3::Eigen gtsam)"
   echo
 done
 
 cat <<EOF
-
+# ---- Install rules --------------------------------------------------------
 install(TARGETS
 EOF
 for exe in "${EXES[@]}"; do echo "  $exe"; done
 cat <<'EOF'
   DESTINATION lib/${PROJECT_NAME})
 
-install(DIRECTORY launch config rviz
+install(DIRECTORY launch config rviz rviz_cfg
   DESTINATION share/${PROJECT_NAME}
   OPTIONAL)
 

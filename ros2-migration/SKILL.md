@@ -142,7 +142,7 @@ Examples:
 ```
 /ros2-migration src/Voxel-SLAM
 /ros2-migration --audit ~/ros1_ws
-/ros2-migration --package=VoxelSLAM /home/steve/lio_ws/src/Voxel-SLAM
+/ros2-migration --package=voxel_slam /home/steve/lio_ws/src/Voxel-SLAM
 ```
 
 ---

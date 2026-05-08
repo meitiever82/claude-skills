@@ -36,6 +36,10 @@ DEP_MAP: dict[str, str] = {
     "nodelet": "rclcpp_components",
     "rosbag": "rosbag2_cpp",
     "pcl_ros": "pcl_conversions",
+    "message_generation": "rosidl_default_generators",
+    "message_runtime": "rosidl_default_runtime",
+    "livox_ros_driver": "livox_ros_driver2",
+    "rviz": "rviz2",
     # tf -> handled specially
     # dynamic_reconfigure -> dropped (no replacement)
 }
@@ -110,27 +114,53 @@ def convert(path: str, dry_run: bool = False) -> int:
             new,
         )
 
-    # 6. Fan-out (e.g. tf -> tf2 + tf2_ros + tf2_geometry_msgs)
+    # 6. Fan-out (e.g. tf -> tf2 + tf2_ros + tf2_geometry_msgs).
+    # Strategy: drop ALL occurrences of the ROS1 dep first, then insert one
+    # block of <depend> lines so build_depend + exec_depend collapse into one.
     for ros1, fan in DEP_FANOUT.items():
-        pat = rf'<(?:build_|exec_|test_)?depend>\s*{re.escape(ros1)}\s*</(?:build_|exec_|test_)?depend>\s*'
-        replacement = ''.join(f"<depend>{d}</depend>\n  " for d in fan).rstrip() + "\n  "
-        new = re.sub(pat, replacement, new)
+        pat = rf'<(?:build_|exec_|test_)?depend>\s*{re.escape(ros1)}\s*</(?:build_|exec_|test_)?depend>\s*\n?'
+        existed = re.search(pat, new) is not None
+        new = re.sub(pat, '', new)
+        if existed:
+            block = ''.join(f"  <depend>{d}</depend>\n" for d in fan)
+            # Insert before the first <export> if any, else before </package>.
+            if re.search(r'<export>', new):
+                new = re.sub(r'(<export>)', block + r'\1', new, count=1)
+            else:
+                new = re.sub(r'</package>', block + r'</package>', new, count=1)
 
-    # 7. Ensure <export><build_type>...</build_type></export> exists
-    if "<build_type>" not in new:
-        export_block = (
-            f"  <export>\n"
-            f"    <build_type>{buildtool}</build_type>\n"
-            f"  </export>\n"
-        )
-        new = re.sub(r'</package>', export_block + r'</package>', new, count=1)
-    else:
+    # 7. Ensure <export><build_type>...</build_type></export> exists.
+    if "<build_type>" in new:
         # Replace existing build_type if it says catkin
         new = re.sub(
             r'<build_type>\s*catkin\s*</build_type>',
             f"<build_type>{buildtool}</build_type>",
             new,
         )
+    elif re.search(r'<export>\s*</export>', new):
+        # Empty <export></export> — fill it in place rather than appending a new one.
+        new = re.sub(
+            r'<export>\s*</export>',
+            f"<export>\n    <build_type>{buildtool}</build_type>\n  </export>",
+            new,
+            count=1,
+        )
+    elif re.search(r'<export>', new):
+        # Existing non-empty <export> — append <build_type> as the first child.
+        new = re.sub(
+            r'(<export>)',
+            r'\1\n    <build_type>' + buildtool + '</build_type>',
+            new,
+            count=1,
+        )
+    else:
+        # No <export> at all — add one before </package>.
+        export_block = (
+            f"  <export>\n"
+            f"    <build_type>{buildtool}</build_type>\n"
+            f"  </export>\n"
+        )
+        new = re.sub(r'</package>', export_block + r'</package>', new, count=1)
 
     if new == text:
         print(f"convert_package_xml: no changes to {path}")

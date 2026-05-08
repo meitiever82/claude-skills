@@ -72,7 +72,7 @@ Update `MIGRATION_PLAN.md`:
 
 ```markdown
 ## Tier order
-1. tier 0: VoxelSLAM (main SLAM node)
+1. tier 0: voxel_slam (main SLAM node — directory `VoxelSLAM/`, package `<name>voxel_slam</name>`)
 2. tier 1: VoxelSLAMPointCloud2 (RViz plugin — defer)
 
 ## Decisions log
@@ -104,7 +104,11 @@ cd livox_ros_driver2 && bash build.sh humble
 
 ---
 
-## Phase 2: Build skeleton (`VoxelSLAM`)
+## Phase 2: Build skeleton (`voxel_slam`)
+
+> ⚠️ The directory is `VoxelSLAM/` but the ROS package name (from `package.xml`'s `<name>`)
+> is `voxel_slam`. `colcon`, `ros2 run`, `ros2 launch`, and `FindPackageShare` all use the
+> package name — **never the directory name**.
 
 ### 2.1 `package.xml`
 
@@ -210,15 +214,15 @@ The cleanest workaround for the skeleton phase: temporarily wrap the file conten
 
 ```bash
 cd ~/lio_ws
-colcon build --packages-select VoxelSLAM --cmake-args -Wno-dev
+colcon build --packages-select voxel_slam --cmake-args -Wno-dev
 ```
 
 ### Phase 2 quality gate
 
 - [ ] `package.xml` is format 3, ament-based.
 - [ ] `CMakeLists.txt` uses `ament_cmake`, `ament_target_dependencies`, `gtsam` linked.
-- [ ] `colcon build --packages-select VoxelSLAM` succeeds (with stub main).
-- [ ] `ros2 run VoxelSLAM voxelslam` exits cleanly.
+- [ ] `colcon build --packages-select voxel_slam` succeeds (with stub main).
+- [ ] `ros2 run voxel_slam voxelslam` exits cleanly.
 
 ---
 
@@ -246,7 +250,7 @@ Then update the namespace usages (`sensor_msgs::Imu` → `sensor_msgs::msg::Imu`
 30 occurrences in `voxelslam.cpp` and `voxelslam.hpp`. After editing, compile:
 
 ```bash
-colcon build --packages-select VoxelSLAM
+colcon build --packages-select voxel_slam
 ```
 
 Expect dozens of errors complaining about `ros::Publisher`, `ros::NodeHandle`, etc. That's
@@ -518,8 +522,8 @@ location.
 
 ### Phase 4 quality gate
 
-- [ ] `colcon build --packages-select VoxelSLAM` clean.
-- [ ] `ros2 run VoxelSLAM voxelslam --ros-args -p General.lid_topic:=/livox/lidar` boots.
+- [ ] `colcon build --packages-select voxel_slam` clean.
+- [ ] `ros2 run voxel_slam voxelslam --ros-args -p General.lid_topic:=/livox/lidar` boots.
 - [ ] `ros2 topic list` shows `/map_cmap`, `/map_scan`, etc.
 - [ ] `RCLCPP_INFO("scale_gravity: ...")` appears on stdout.
 
@@ -550,7 +554,7 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    pkg = FindPackageShare('VoxelSLAM')
+    pkg = FindPackageShare('voxel_slam')
     cfg = PathJoinSubstitution([pkg, 'config', 'avia.yaml'])
     rviz = PathJoinSubstitution([pkg, 'rviz_cfg', 'voxelslam.rviz'])
 
@@ -558,7 +562,7 @@ def generate_launch_description():
         DeclareLaunchArgument('rviz', default_value='true'),
 
         Node(
-            package='VoxelSLAM', executable='voxelslam', name='voxelslam',
+            package='voxel_slam', executable='voxelslam', name='voxelslam',
             output='screen',
             parameters=[cfg, {'use_sim_time': False}],
         ),
@@ -573,7 +577,7 @@ def generate_launch_description():
 
 ### 5.2 Convert all six YAML configs
 
-For each `<config>.yaml` in `VoxelSLAM/config/`, prepend a node-name scope and indent:
+For each `<config>.yaml` in `VoxelSLAM/config/` (directory unchanged), prepend a node-name scope and indent:
 
 ```yaml
 # Before (ROS1 / rosparam load)
@@ -633,14 +637,14 @@ Re-build:
 
 ```bash
 cd ~/lio_ws
-colcon build --packages-select VoxelSLAM
+colcon build --packages-select voxel_slam
 source install/setup.bash
-ros2 launch VoxelSLAM vxlm_avia.launch.py
+ros2 launch voxel_slam vxlm_avia.launch.py
 ```
 
 ### Phase 5 quality gate
 
-- [ ] `ros2 launch VoxelSLAM vxlm_avia.launch.py` brings the node up.
+- [ ] `ros2 launch voxel_slam vxlm_avia.launch.py` brings the node up.
 - [ ] No "parameter not declared" warnings.
 - [ ] `ros2 topic list` shows expected topics.
 
@@ -659,7 +663,7 @@ rosbags-convert ~/datasets/voxel_slam/site3_handheld_4.bag    # creates site3_ha
 
 ```bash
 # Terminal 1
-ros2 launch VoxelSLAM vxlm_avia.launch.py
+ros2 launch voxel_slam vxlm_avia.launch.py
 
 # Terminal 2
 ros2 bag play ~/datasets/voxel_slam/site3_handheld_4 --clock
@@ -732,12 +736,12 @@ git clone <this repo>
 git clone https://github.com/Livox-SDK/livox_ros_driver2.git
 cd livox_ros_driver2 && bash build.sh humble
 cd ~/ros2_ws
-colcon build --packages-up-to VoxelSLAM
+colcon build --packages-up-to voxel_slam
 source install/setup.bash
 
 ## Run
 
-ros2 launch VoxelSLAM vxlm_avia.launch.py
+ros2 launch voxel_slam vxlm_avia.launch.py
 ```
 
 ### Phase 7 quality gate
