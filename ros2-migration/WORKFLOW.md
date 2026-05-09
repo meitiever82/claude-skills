@@ -39,7 +39,7 @@
 │   ├─ Rewrite <foo_msgs/Bar.h> → <foo_msgs/msg/bar.hpp>                   │
 │   ├─ Update C++ namespaces (msg/srv/action subnamespaces)                │
 │   ├─ tf::… → tf2::… / tf2_ros::…                                         │
-│   └─ Gate ✅: package compiles (link errors expected, that's fine)        │
+│   └─ Gate ✅: package compiles (link errors expected, that's fine)       │
 │                                                                          │
 │  Phase 4: Node API                                                       │
 │   ├─ ros::NodeHandle  → rclcpp::Node                                     │
@@ -49,26 +49,26 @@
 │   ├─ n.param<T>(...) → declare_parameter + get_parameter                 │
 │   ├─ tf::TransformBroadcaster → tf2_ros::TransformBroadcaster            │
 │   ├─ ROS_INFO/ERROR → RCLCPP_INFO/ERROR with get_logger()                │
-│   └─ Gate ✅: `ros2 run <pkg> <exe>` boots without crashing,              │
-│                even if it doesn't yet do useful work                      │
+│   └─ Gate ✅: `ros2 run <pkg> <exe>` boots without crashing,             │
+│                even if it doesn't yet do useful work                     │
 │                                                                          │
 │  Phase 5: Launch & Params                                                │
 │   ├─ <pkg>.launch (XML) → <pkg>.launch.py                                │
 │   ├─ <param name="..."> → declare_parameter + YAML file                  │
 │   ├─ rosparam load → launch_ros.actions.Node(parameters=[...])           │
-│   └─ Gate ✅: `ros2 launch <pkg> <pkg>.launch.py` brings node up          │
+│   └─ Gate ✅: `ros2 launch <pkg> <pkg>.launch.py` brings node up         │
 │                                                                          │
 │  Phase 6: Verify                                                         │
 │   ├─ `colcon test`                                                       │
 │   ├─ `ros2 topic list` / echo on key topics                              │
-│   ├─ Replay a bag against the new node and compare output               │
-│   └─ Gate ✅: functional parity with ROS1 baseline                        │
+│   ├─ Replay a bag against the new node and compare output                │
+│   └─ Gate ✅: functional parity with ROS1 baseline                       │
 │                                                                          │
 │  Phase 7: Cleanup                                                        │
 │   ├─ Remove ROS1-only files (.launch XML, package.xml v2 backups)        │
 │   ├─ Remove `// ROS2 migration:` markers older than 30 days              │
 │   ├─ Update README, CONTRIBUTING, CI                                     │
-│   └─ Gate ✅: PR description lists every behavioural change                │
+│   └─ Gate ✅: PR description lists every behavioural change              │
 │                                                                          │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
@@ -124,11 +124,26 @@ grep -rn "ros::package::getPath" src/                    # → ament_index_cpp
 grep -rn "<sensor_msgs/.*\.h>" src/                       # ROS1 header style
 ```
 
+### 0.4 Inventory RViz configs
+
+`.rviz` files are not just data — RViz1 and RViz2 use **different display class
+names** (`rviz/Grid` vs `rviz_default_plugins/Grid`) and RViz2 wraps each
+topic in a QoS sub-property block. A ROS1 `.rviz` will load in RViz2 with
+broken displays unless you rewrite it.
+
+```bash
+find src/ -name '*.rviz' | xargs -I{} grep -l '^      Class: rviz/' {} 2>/dev/null
+```
+
+If the count is non-zero, log them in `MIGRATION_PLAN.md` for Phase 5 conversion
+(see §5.4 below). Don't try to fix them now — wait until your launch file
+references the converted path.
+
 ### Quality Gate 0
 
 - [ ] All `<depend>` entries triaged
 - [ ] All ROS1-only deps have a documented decision (port / replace / drop)
-- [ ] Every `.launch`, plugin, nodelet, action, message_filter is enumerated
+- [ ] Every `.launch`, `.rviz`, plugin, nodelet, action, message_filter is enumerated
 - [ ] `MIGRATION_PLAN.md` § Inventory exists
 
 **Cannot proceed if**: any blocker dep is "unknown".
@@ -184,7 +199,7 @@ Required sections:
 
 ```bash
 git checkout -b ros2-migration
-source /opt/ros/humble/setup.bash         # confirms toolchain
+source /opt/ros/humble/setup.bash           # confirms toolchain
 which colcon                                # confirms colcon is on PATH
 ros2 --version                              # confirm Humble
 ```
@@ -610,12 +625,133 @@ install(DIRECTORY launch config rviz
 
 Without this, `ros2 launch` will not find your `.launch.py` files.
 
+### 5.4 Convert RViz configs (`.rviz`)
+
+`.rviz` files are versioned YAML. Two things differ between RViz1 and RViz2:
+
+1. **Display / Tool / View-Controller class names** all moved into the
+   `rviz_default_plugins/` namespace.
+2. **Topic properties became sub-properties** carrying QoS fields (Depth,
+   History Policy, Reliability Policy, Durability Policy, Filter size).
+
+Without conversion, RViz2 starts but the displays show **"Class
+'rviz/Grid' is not registered"** and the panel is empty.
+
+#### Common class-name renames
+
+| RViz1 (`Class: ...`) | RViz2 |
+|---|---|
+| `rviz/Grid` | `rviz_default_plugins/Grid` |
+| `rviz/Image` | `rviz_default_plugins/Image` |
+| `rviz/Camera` | `rviz_default_plugins/Camera` |
+| `rviz/PointCloud2` | `rviz_default_plugins/PointCloud2` |
+| `rviz/LaserScan` | `rviz_default_plugins/LaserScan` |
+| `rviz/Path` | `rviz_default_plugins/Path` |
+| `rviz/Odometry` | `rviz_default_plugins/Odometry` |
+| `rviz/PoseStamped` | `rviz_default_plugins/Pose` *(also renamed)* |
+| `rviz/PoseArray` | `rviz_default_plugins/PoseArray` |
+| `rviz/PointStamped` | `rviz_default_plugins/PointStamped` |
+| `rviz/Marker` | `rviz_default_plugins/Marker` |
+| `rviz/MarkerArray` | `rviz_default_plugins/MarkerArray` |
+| `rviz/RobotModel` | `rviz_default_plugins/RobotModel` *(see note)* |
+| `rviz/TF` | `rviz_default_plugins/TF` |
+| `rviz/Map` | `rviz_default_plugins/Map` |
+| `rviz/Range` | `rviz_default_plugins/Range` |
+| `rviz/Axes` | `rviz_default_plugins/Axes` |
+| `rviz/InteractiveMarkers` | `rviz_default_plugins/InteractiveMarkers` |
+| `rviz/MoveCamera` (Tool) | `rviz_default_plugins/MoveCamera` |
+| `rviz/Select` (Tool) | `rviz_default_plugins/Select` |
+| `rviz/SetGoal` / `rviz/2D Nav Goal` | `rviz_default_plugins/SetGoal` |
+| `rviz/SetInitialPose` / `rviz/2D Pose Estimate` | `rviz_default_plugins/SetInitialPose` |
+| `rviz/PublishPoint` | `rviz_default_plugins/PublishPoint` |
+| `rviz/Orbit` (View Controller) | `rviz_default_plugins/Orbit` |
+| `rviz/XYOrbit` | `rviz_default_plugins/XYOrbit` |
+| `rviz/FPS` | `rviz_default_plugins/FPS` |
+| `rviz/ThirdPersonFollower` | `rviz_default_plugins/ThirdPersonFollower` |
+| `rviz/TopDownOrtho` | `rviz_default_plugins/TopDownOrtho` |
+
+**`RobotModel` note**: RViz2 reads the URDF from a topic
+(`/robot_description`), not from a parameter. The display has a `Description
+Topic` field instead of `Robot Description` (param name). Republish the URDF
+via `robot_state_publisher` (which already does this in ROS2 Humble), or use
+the `Description Source: File` option.
+
+#### Topic → QoS sub-properties
+
+```yaml
+# RViz1
+- Class: rviz/PointCloud2
+  Name: cloud_registered
+  Topic: /cloud_registered
+  Queue Size: 100
+  Style: Points
+```
+becomes:
+```yaml
+# RViz2
+- Class: rviz_default_plugins/PointCloud2
+  Name: cloud_registered
+  Topic:
+    Value: /cloud_registered
+    Depth: 5
+    History Policy: Keep Last
+    Reliability Policy: Best Effort        # set per-topic; LiDAR/IMU usually best_effort
+    Durability Policy: Volatile
+    Filter size: 10
+  Style: Points
+```
+
+The most common runtime symptom of forgetting this: **RViz2 shows the topic
+in green but the cloud never appears**. Cause: publisher uses `best_effort`
+QoS (typical for LiDAR / sensor data) but the .rviz still encodes default
+`reliable`. Fix the .rviz to match the publisher.
+
+#### Tool / View Controller / Visualization Manager
+
+Tools and view controllers also need the namespace change. Additionally
+the global `Visualization Manager` may carry a stale `Tool Properties` block
+that RViz2 silently drops if the tool class isn't found — which usually
+just means the in-3D-view click tools don't work until you re-add them.
+
+#### Helper
+
+A simple sed-based rewriter handles the class renames:
+
+```bash
+bash helpers/rewrite_rviz_config.sh path/to/main.rviz
+```
+
+It:
+- backs up `<file>.rviz.bak`
+- substitutes the rename table above
+- warns (does **not** auto-fix) when it sees `Topic: /something` that
+  needs to be hand-converted to a QoS sub-property block
+
+After running it, **open the file in RViz2 and re-save** — RViz2's "Save
+Config As" canonicalises any remaining differences (defaults, missing
+fields). This is the cheapest way to get a fully-valid RViz2 config.
+
+#### When to give up and rebuild from scratch
+
+If the `.rviz` file is more than a few years old, or carries displays from
+an in-house RViz1 plugin, it's faster to:
+1. Launch a fresh `rviz2`,
+2. Add the displays you actually need,
+3. `Save Config As <pkg>/rviz/main.rviz`,
+4. `git diff` against the old file to confirm topic names and frames carry
+   over.
+
+Budget: 10–30 minutes per `.rviz`. Custom RViz1 plugins are a separate
+rewrite — see Gotcha #24.
+
 ### Quality Gate 5
 
 - [ ] `ros2 launch <pkg> <name>.launch.py` brings the node up
 - [ ] All declared params in code receive YAML values (no warnings about defaults)
 - [ ] Topic remappings (`<remap from="..." to="..."/>`) translated into `remappings=[...]`
 - [ ] Conditions (`if=`/`unless=`) translated into `IfCondition`/`UnlessCondition`
+- [ ] All referenced `.rviz` files load in RViz2 without "class not registered" warnings
+- [ ] Sensor-data topics (LiDAR / IMU / Camera) in RViz match publisher QoS (best_effort vs reliable)
 
 ---
 

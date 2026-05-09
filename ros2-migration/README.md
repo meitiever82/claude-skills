@@ -17,6 +17,7 @@ phased workflow, helper scripts, and a verifiable end state.
 | [`helpers/`](helpers/) | Bash & Python automation: header rewriter, package.xml converter, CMakeLists scaffolder, launch-XML→launch.py, workspace audit. |
 | [`verification/`](verification/) | `smoke_test.sh`, `deprecation_grep.sh`, PR `checklist.md`. |
 | [`examples/voxel-slam-migration.md`](examples/voxel-slam-migration.md) | End-to-end worked example: porting Voxel-SLAM (Noetic LIO). |
+| [`examples/fast-livo2-migration.md`](examples/fast-livo2-migration.md) | Worked example: salvaging a half-ported `*_ROS2` fork (FAST-LIVO2 + rpg_vikit). |
 
 ---
 
@@ -38,10 +39,13 @@ bash helpers/rewrite_headers.sh path/to/src
 # 5. Translate a ROS1 .launch (XML) into a ROS2 .launch.py stub.
 python3 helpers/launch_xml_to_py.py path/to/foo.launch > path/to/foo.launch.py
 
-# 6. After Phase 4 is done, smoke-test the package.
+# 6. Convert .rviz config files (RViz1 → RViz2 class names + QoS warnings).
+bash helpers/rewrite_rviz_config.sh path/to/<pkg>/rviz/
+
+# 7. After Phase 4 is done, smoke-test the package.
 bash verification/smoke_test.sh path/to/package_dir
 
-# 7. Run a final ROS1-only-pattern check before merging.
+# 8. Run a final ROS1-only-pattern check before merging.
 bash verification/deprecation_grep.sh path/to/src
 ```
 
@@ -99,7 +103,7 @@ If during migration you find:
 
 | | |
 |---|---|
-| Version | 1.0 |
+| Version | 1.2 |
 | Target distro | Humble (Iron/Jazzy supported with notes) |
-| Last updated | 2026-05-07 |
-| Author | Generated via Claude Code, refined against the Voxel-SLAM use case |
+| Last updated | 2026-05-09 |
+| Author | Generated via Claude Code, refined against the Voxel-SLAM and FAST-LIVO2_ROS2 cases |

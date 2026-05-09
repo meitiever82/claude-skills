@@ -785,6 +785,473 @@ now sees the workspace's own install dir on `CMAKE_PREFIX_PATH` and gets confuse
 
 ---
 
+## Gotcha #31: A repo named `*_ROS2` may be half-ported
+
+### Symptom
+You clone `<project>_ROS2`, run `colcon build`, and get hundreds of errors:
+```
+error: 'ros' has not been declared
+error: 'NodeHandle' is not a member of 'rclcpp'
+fatal error: nav_msgs/Odometry.h: No such file or directory
+```
+even though the repo is described as a ROS2 port.
+
+### Cause
+Many community "ROS2 forks" only translated **header include paths** (e.g.
+`<sensor_msgs/Imu.h>` → `<sensor_msgs/msg/imu.hpp>`) and updated `package.xml`
+to use `ament_cmake`. The actual API code (`ros::NodeHandle`, `ros::Publisher`,
+`ros::Subscriber`, `ros::Timer`, `ros::Time`, `ros::Rate`, `image_transport`,
+`livox_ros_driver`, `tf::TransformBroadcaster`, `ROS_INFO/ERROR`, …) is still
+ROS1.
+
+### Detection — do this FIRST, before estimating effort
+```bash
+# Count ROS1-only patterns; expect ~0 for a true ROS2 port.
+grep -rE "ros::|nh\.advertise|nh\.subscribe|nh\.createTimer|nh\.param|ros::Time::now|ros::Rate|ros::ok|::ConstPtr|tf::TransformBroadcaster|ROS_(INFO|WARN|ERROR|ASSERT)" \
+    src/<repo>/{src,include} | wc -l
+
+grep -rE "ros::NodeHandle" src/<repo>/{src,include}        # critical signal: any hit ⇒ heavy port
+```
+
+### Fix
+- A genuine ROS2 port reads `0` (or only comments) on the grep above.
+- Real-world FAST-LIVO2_ROS2 (Vulcan-YJX fork, May 2026): ~119 hits in the
+  main file alone — the headers were swapped but the code wasn't.
+- **Budget realistically**: 1-3 hours per ~1k LoC of ROS-touching seam.
+
+### Decision tree
+```
+grep count = 0   → port is real, build issues are likely env/dep problems.
+grep count < 50  → light cleanup; do it inline.
+grep count > 100 → significant rewrite; ask the user before starting.
+```
+
+The `examples/fast-livo2-migration.md` walkthrough is the canonical case.
+
+---
+
+## Gotcha #32: Sophus 1.22 — `SE3` is now a template, not a typedef
+
+### Symptom
+```cpp
+Sophus::SE3 T;
+//          ^^^ error: invalid use of template-name 'Sophus::SE3' without an argument list
+```
+or `error: 'using SE3 = ...' has no member named 'rotation_matrix'`.
+
+### Cause
+- Old (pre-1.0) Sophus: `Sophus::SE3` was a `typedef` to `SE3<double>`.
+- Sophus 1.x (shipped with `ros-humble-sophus`): `template<class Scalar_, int Options> class SE3;`.
+
+So `Sophus::SE3` without an argument list no longer names a type. Plus several
+methods were renamed (camel-case migration):
+
+| Old (pre-1.0) | New (1.x) |
+|---|---|
+| `Sophus::SE3` | `Sophus::SE3<double>` aka `Sophus::SE3d` |
+| `T.rotation_matrix()` | `T.rotationMatrix()` |
+| `<sophus/se3.h>` | `<sophus/se3.hpp>` |
+
+### Fix
+Two complementary changes in any file that uses unqualified `SE3`:
+
+```cpp
+// In your common header:
+#include <sophus/se3.hpp>
+// using namespace Sophus;                      // DO NOT — see Gotcha #33
+using SE3 = Sophus::SE3d;                       // legacy short name
+```
+
+Then replace `T.rotation_matrix()` with `T.rotationMatrix()` everywhere
+(`sed -i 's/\.rotation_matrix()/\.rotationMatrix()/g' src/**/*.{cpp,h}`).
+
+### Why this comes up in ROS2 migration
+ROS1 codebases pinned to old Sophus via `apt install ros-noetic-sophus` or
+the `strasdat/Sophus` 0.9 release. Humble's `ros-humble-sophus` is 1.22.
+Migrations get bitten as soon as the system Sophus is the only one available.
+
+---
+
+## Gotcha #33: `using namespace Sophus;` clashes with `using namespace Eigen;`
+
+### Symptom
+```cpp
+using namespace Eigen;
+using namespace Sophus;
+// later …
+Matrix<double, 3, 1> v;
+//      ^^^^^^ error: reference to 'Matrix' is ambiguous
+//             candidates: Eigen::Matrix<...>  or  Sophus::Matrix<...>
+```
+Or more cryptically:
+```cpp
+template <typename T>
+auto fn(const Matrix<T,3,1> &a, ...) { ... a(i) ... }
+//        ^^^^^^ ambiguous → entire signature fails to parse
+//                ↓
+// error: there are no arguments to 'a' that depend on a template parameter
+```
+
+### Cause
+Sophus 1.22 ships `template <class Scalar, int M, int N> using Matrix = Eigen::Matrix<...>;`
+in `sophus/types.hpp`. Both namespaces export `Matrix` ⇒ ambiguous.
+
+The cryptic second error happens because the compiler fails to parse the
+function signature (ambiguous `Matrix`), so all arguments lose their names —
+later `a(i)` references an undeclared identifier.
+
+### Fix
+Drop `using namespace Sophus`. Pull in only what you need:
+
+```cpp
+#include <sophus/se3.hpp>
+using namespace std;
+using namespace Eigen;
+// using namespace Sophus;            // ⚠️ DO NOT
+using SE3 = Sophus::SE3d;             // explicit short alias
+using SO3 = Sophus::SO3d;             // if you need it
+```
+
+If you *must* keep both `using namespace`s (legacy code), fully qualify
+`Eigen::Matrix<...>` everywhere.
+
+---
+
+## Gotcha #34: `vikit_common` / `vikit_ros` and similar satellite libraries are catkin-only
+
+### Symptom
+You're porting FAST-LIVO2, SVO, or DSO and the build immediately complains:
+```
+fatal error: vikit/abstract_camera.h: No such file or directory
+fatal error: vikit/camera_loader.h:    No such file or directory
+```
+The author's repo for vikit (xuankuzcr, Taeyoung96, uzh-rpg) is still ROS1 catkin.
+
+### Cause
+Many vision/SLAM libraries depend on a small "common math" sidecar (`rpg_vikit`,
+`svo_common`, `direct_visual_lidar_calibration`/internal Kontiki, …). These
+libraries:
+- Have `catkin` in their `package.xml` and an old `CMakeLists.txt`.
+- Provide pure C++ utilities (Eigen, OpenCV, Sophus) — **no actual ROS code**
+  in the algorithm modules.
+- Have one ROS-touching helper file (e.g. `vikit_ros/output_helper.cpp` uses
+  `tf::Transform` and `ros::Publisher`).
+
+### Fix — port the satellite library yourself, not the algorithm
+The mechanical recipe (proven on `rpg_vikit` for FAST-LIVO2_ROS2):
+
+1. **Rewrite `package.xml`** to format=3 + `<buildtool_depend>ament_cmake</buildtool_depend>`.
+2. **Rewrite `CMakeLists.txt`** as a plain ament shared library — drop `catkin_package(...)`.
+   ```cmake
+   find_package(ament_cmake REQUIRED)
+   find_package(Eigen3 REQUIRED)
+   find_package(OpenCV REQUIRED)
+   find_package(Sophus REQUIRED)
+   add_library(${PROJECT_NAME} SHARED ${SOURCEFILES})
+   target_include_directories(${PROJECT_NAME} PUBLIC
+     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+     $<INSTALL_INTERFACE:include>)
+   target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS} Sophus::Sophus)
+   install(DIRECTORY include/ DESTINATION include)
+   install(TARGETS ${PROJECT_NAME}
+     EXPORT export_${PROJECT_NAME}
+     ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
+   ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
+   ament_export_dependencies(Eigen3 OpenCV Sophus)
+   ament_package()
+   ```
+3. **Drop ROS1-only source files from the build list** if your downstream
+   doesn't use them (e.g. `vikit_ros/src/output_helper.cpp` references
+   `tf::*`/`ros::Publisher` — exclude it from `add_library` until / unless
+   you need it). The headers can stay; what matters is that compiled
+   translation units don't pull in ROS1 APIs.
+4. **Re-implement the one ROS helper your downstream needs**. For
+   `vikit_ros/camera_loader.h::loadFromRosNs`, change the signature to take
+   `rclcpp::Node*` and read parameters via `node->declare_parameter<T>` /
+   `get_parameter`.
+
+For FAST-LIVO2_ROS2 specifically the fully-worked recipe lives in
+`examples/fast-livo2-migration.md` §"vikit port".
+
+---
+
+## Gotcha #35: Old vikit `AbstractCamera` is missing `fx()/fy()/cx()/cy()/scale()`
+
+### Symptom
+After porting `vikit_common` to ament_cmake, the downstream still fails:
+```
+error: 'class vk::AbstractCamera' has no member named 'fx'
+error: 'class vk::AbstractCamera' has no member named 'scale'
+```
+
+### Cause
+FAST-LIVO2 uses a **customised** `vk::AbstractCamera` with virtual `fx()`, `fy()`,
+`cx()`, `cy()`, `scale()` accessors so the algorithm can read intrinsics from
+the abstract base. The upstream `rpg_vikit` only puts these on `PinholeCamera`.
+
+### Fix
+Add the FAST-LIVO2 extension yourself in `abstract_camera.h`:
+
+```cpp
+class AbstractCamera {
+  // ...
+  virtual double fx() const { return 0.0; }
+  virtual double fy() const { return 0.0; }
+  virtual double cx() const { return 0.0; }
+  virtual double cy() const { return 0.0; }
+  virtual double scale() const { return 1.0; }
+};
+```
+
+In `PinholeCamera` mark the existing accessors `override` and add a `scale_`
+member + `setScale()` setter. Have `camera_loader::loadFromRosNs` read the
+`scale` parameter and call `setScale()` after construction.
+
+This is FAST-LIVO2 / direct-VIO specific, but the same pattern (downstream
+expects extra virtuals) recurs whenever you port a satellite lib that's been
+patched in-place by the upstream project.
+
+---
+
+## Gotcha #36: `ROS_ASSERT` is gone
+
+### Symptom
+```cpp
+ROS_ASSERT(ptr != nullptr);
+//   ^^^^^^^^^^ error: 'ROS_ASSERT' was not declared in this scope; did you mean 'FMT_ASSERT'?
+```
+
+### Cause
+ROS1's `ROS_ASSERT` macro lived in `<ros/assert.h>`. ROS2 removed it — the
+preferred form is plain `assert()` (or your own logger-coupled abort).
+
+### Fix
+```cpp
+#include <cassert>
+assert(ptr != nullptr);
+```
+
+If you want the assertion to log via the ROS2 logger before aborting:
+
+```cpp
+if (!(ptr != nullptr)) {
+  RCLCPP_FATAL(this->get_logger(), "assertion failed: ptr != nullptr");
+  std::abort();
+}
+```
+
+Bulk-replace recipe:
+```bash
+sed -i 's/\bROS_ASSERT(/assert(/g' src/**/*.cpp
+```
+
+---
+
+## Gotcha #37: `tf::createQuaternionMsgFromRollPitchYaw` removed
+
+### Symptom
+```cpp
+geoQuat = tf::createQuaternionMsgFromRollPitchYaw(roll, pitch, yaw);
+//        ^^ error: 'tf' has not been declared
+```
+
+### Cause
+The ROS1 `tf` (singular, not `tf2`) free-function helpers are gone. ROS2 routes
+all rotation conversions through `tf2::Quaternion` + `tf2::toMsg`.
+
+### Fix
+```cpp
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+
+tf2::Quaternion q;
+q.setRPY(roll, pitch, yaw);
+geometry_msgs::msg::Quaternion geoQuat = tf2::toMsg(q);
+// or assign component-wise if the destination is a struct field:
+// geoQuat.x = q.x(); geoQuat.y = q.y(); geoQuat.z = q.z(); geoQuat.w = q.w();
+```
+
+Other RPG/FAST-LIVO-style helpers and their replacements:
+
+| ROS1 (gone) | ROS2 |
+|---|---|
+| `tf::createQuaternionMsgFromYaw(yaw)` | `tf2::Quaternion q; q.setRPY(0,0,yaw); tf2::toMsg(q)` |
+| `tf::Quaternion(...)` | `tf2::Quaternion(...)` |
+| `tf::Vector3(x,y,z)` | `tf2::Vector3(x,y,z)` |
+| `tf::Transform`/`tf::StampedTransform` | `geometry_msgs::msg::TransformStamped` |
+| `br.sendTransform(tf::StampedTransform(t, stamp, "a", "b"))` | construct `TransformStamped`, set fields, `br_.sendTransform(ts)` |
+
+---
+
+## Gotcha #38: `colcon build --packages-select <one>` doesn't see workspace overlay deps
+
+### Symptom
+```bash
+$ colcon build --packages-select fast_livo
+fatal error: livox_ros_driver2/msg/custom_msg.hpp: No such file or directory
+```
+…even though `install/livox_ros_driver2/include/...` exists in the same
+workspace and was built earlier.
+
+### Cause
+`colcon build --packages-select X` builds **only** package X. CMake's
+`find_package(livox_ros_driver2 …)` still needs the dependency to be on
+`AMENT_PREFIX_PATH` — but `colcon` does not auto-add `<this-ws>/install/<dep>`
+to the build environment unless you've sourced it.
+
+### Fix
+Two clean options:
+
+**(a) Source the overlay before incremental builds** (works always):
+```bash
+source /opt/ros/humble/setup.bash
+source ~/<ws>/install/setup.bash       # makes already-built siblings visible
+colcon build --packages-select fast_livo
+```
+
+**(b) Let colcon resolve the dep graph** (better for clean builds):
+```bash
+source /opt/ros/humble/setup.bash
+colcon build --packages-up-to fast_livo
+```
+This builds livox_ros_driver2 → vikit_common → vikit_ros → fast_livo in
+order, in a single invocation, without the overlay-source dance.
+
+### Trap
+If you sourced the overlay **before** the first build, you may hit Gotcha #30
+(stale cache from CMake remembering the old install paths). The two gotchas
+trade off — pick one rule for your project and stick to it:
+
+| Rule | Suits |
+|---|---|
+| Always source `install/setup.bash` before `colcon build` | day-to-day dev with frequent `--packages-select` |
+| Never source `install/setup.bash` before `colcon build` | clean builds, CI, `--packages-up-to` |
+
+---
+
+## Gotcha #39: `stamp.toSec()` and high-precision time round-tripping
+
+### Symptom
+```cpp
+double t = msg->header.stamp.toSec();
+//                            ^^^^^^^ error: 'class builtin_interfaces::msg::Time'
+//                                    has no member named 'toSec'
+```
+Or, more insidiously, you write a value into a stamp by hand and lose ~1µs:
+```cpp
+msg->header.stamp = rclcpp::Time(int64_t(stamp_double * 1e9));
+// then re-read: rclcpp::Time(msg->header.stamp).seconds() differs by ~1e-6
+```
+
+### Cause
+`std_msgs::msg::Header::stamp` is a `builtin_interfaces::msg::Time` (POD with
+`int32 sec` and `uint32 nanosec`). The ROS1 helpers `.toSec()` / `.fromSec()`
+are gone; you must wrap in `rclcpp::Time` first.
+
+The precision loss is the classic double→int64 nanosecond mistake: a Unix
+timestamp ≈ 1.77e9 has ~10 decimal digits, but double's ~15.95 sig digits
+leave only ~5–6 digits below the second mark — so multiplying by 1e9 truncates
+sub-microsecond precision.
+
+### Fix — read
+```cpp
+double t = rclcpp::Time(msg->header.stamp).seconds();
+```
+
+### Fix — write a double timestamp into a stamp without precision loss
+```cpp
+double stamp = ...;                                   // e.g. 1770885771.7012345
+int64_t s  = static_cast<int64_t>(std::floor(stamp));
+int64_t ns = static_cast<int64_t>(std::round((stamp - s) * 1e9));
+msg->header.stamp = rclcpp::Time(s, ns);
+```
+
+This idiom avoids the double-precision loss observed in GLIM and other LIO
+systems where `tf_time_offset: 1e-6` µs jitter caused TF lookup failures.
+See `CLAUDE.md` of the rtabmap_ws workspace for a real incident.
+
+---
+
+## Gotcha #40: `.rviz` config files load but show empty / "class not registered"
+
+### Symptom
+You launch `rviz2 -d main.rviz` ported from ROS1. RViz2 starts, but:
+- The Displays panel is empty or shows "**Class 'rviz/Grid' is not
+  registered**" warnings on stdout.
+- A `PointCloud2` topic appears in the Displays list but no points show
+  up — even though `ros2 topic echo` confirms the publisher is alive.
+
+### Cause
+Two related schema differences:
+
+1. **Class names moved into `rviz_default_plugins/`**. Every display, tool,
+   and view-controller has a new `Class:` value:
+   ```yaml
+   # ROS1 .rviz                       # ROS2 .rviz
+   Class: rviz/Grid                   Class: rviz_default_plugins/Grid
+   Class: rviz/PointCloud2            Class: rviz_default_plugins/PointCloud2
+   Class: rviz/PoseStamped            Class: rviz_default_plugins/Pose      ← also renamed
+   Class: rviz/Orbit                  Class: rviz_default_plugins/Orbit
+   ```
+
+2. **`Topic: /xxx` is now a sub-property block carrying QoS fields**.
+   ```yaml
+   # ROS1
+   Topic: /cloud_registered
+
+   # ROS2
+   Topic:
+     Value: /cloud_registered
+     Depth: 5
+     History Policy: Keep Last
+     Reliability Policy: Best Effort        ← must match publisher!
+     Durability Policy: Volatile
+     Filter size: 10
+   ```
+
+### Detection
+```bash
+grep -rEl '^[[:space:]]+Class: rviz/' <pkg>/rviz/        # ROS1-style classes
+grep -rE  '^[[:space:]]+Topic: /'      <pkg>/rviz/        # short-form topics
+```
+Either grep returning hits ⇒ the file needs conversion.
+
+### Fix
+**Mechanical pass** — handles all class renames:
+```bash
+bash helpers/rewrite_rviz_config.sh path/to/main.rviz
+# or recurse into a directory:
+bash helpers/rewrite_rviz_config.sh path/to/<pkg>/rviz/
+```
+
+**Manual pass** — for the Topic-block conversion (the helper warns but
+doesn't auto-fix):
+```bash
+rviz2 -d path/to/main.rviz                     # open it
+#  - acknowledge "class not registered" warnings (helper missed something)
+#  - re-add or fix any displays
+#  - File → Save Config (Ctrl+S) to canonicalise
+```
+RViz2's save round-trip is the cheapest way to reach a fully-valid file —
+it fills in default QoS sub-properties and removes deprecated keys.
+
+### `RobotModel` special case
+RViz2 reads URDF from a **topic** (`/robot_description`), not a parameter.
+The display has a `Description Topic` field. Either:
+- Run `robot_state_publisher` (which publishes `/robot_description` in
+  ROS2 Humble), or
+- Set `Description Source: File` and `Description File: <path>` in the
+  display.
+
+### When to scrap and start over
+For any `.rviz` more than ~3 years old, or carrying displays from an
+in-house RViz1 plugin, it's faster to launch a fresh `rviz2`, add the
+displays you actually need, and `Save Config As`. Budget 10–30 minutes
+per `.rviz`. Custom RViz1 plugins remain a separate rewrite — see
+Gotcha #24.
+
+---
+
 ## Summary Table
 
 | Gotcha | Detection | Severity |
@@ -819,6 +1286,16 @@ now sees the workspace's own install dir on `CMAKE_PREFIX_PATH` and gets confuse
 | Eigen threading | random crashes | ⭐⭐ |
 | `message_filters` API | compile error | ⭐⭐ |
 | Stale colcon cache | spurious second-run failures | ⭐ |
+| Half-ported `*_ROS2` repo | `grep -r ros::NodeHandle` | ⭐⭐⭐ |
+| Sophus 1.x SE3 template | compile error | ⭐⭐⭐ |
+| Sophus×Eigen Matrix clash | cryptic compile error | ⭐⭐⭐ |
+| Catkin-only satellite lib (vikit) | compile error | ⭐⭐ |
+| FAST-LIVO `AbstractCamera` extension | compile error | ⭐⭐ |
+| `ROS_ASSERT` removed | compile error | ⭐ |
+| `tf::createQuaternionMsg…` removed | compile error | ⭐⭐ |
+| `--packages-select` misses overlay | compile error | ⭐⭐⭐ |
+| `stamp.toSec()` / int64 ns precision | compile error / silent µs loss | ⭐⭐ |
+| `.rviz` class names + Topic→QoS | empty Displays / wrong QoS | ⭐⭐ |
 
 ---
 

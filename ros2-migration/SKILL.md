@@ -118,13 +118,15 @@ ros2-migration/
 │   ├── convert_package_xml.py  # v2 → v3 converter
 │   ├── scaffold_cmakelists.sh  # generate ROS2 CMakeLists.txt from a ROS1 one
 │   ├── launch_xml_to_py.py     # .launch (XML) → .launch.py stub generator
+│   ├── rewrite_rviz_config.sh  # .rviz Class:rviz/X → rviz_default_plugins/X + QoS warnings
 │   └── audit_workspace.sh      # workspace-wide ROS2-readiness audit
 ├── verification/
 │   ├── smoke_test.sh           # colcon build + ros2 run smoke test
 │   ├── deprecation_grep.sh     # find remaining ROS1-only patterns
 │   └── checklist.md            # per-PR review checklist
 └── examples/
-    └── voxel-slam-migration.md # worked example: Voxel-SLAM (Noetic → Humble)
+    ├── voxel-slam-migration.md # worked example: Voxel-SLAM (Noetic → Humble)
+    └── fast-livo2-migration.md # worked example: FAST-LIVO2_ROS2 half-ported fork
 ```
 
 ---
@@ -169,7 +171,8 @@ This skill loads on demand:
 - **Phase 3**: `templates/package.xml`, `templates/CMakeLists.txt`, `helpers/convert_package_xml.py`,
   `helpers/scaffold_cmakelists.sh`.
 - **Phase 4**: `API_MAPPING.md`, `templates/node.cpp`, `helpers/rewrite_headers.sh`.
-- **Phase 5**: `templates/launch.py`, `templates/params.yaml`, `helpers/launch_xml_to_py.py`.
+- **Phase 5**: `templates/launch.py`, `templates/params.yaml`, `helpers/launch_xml_to_py.py`,
+  `helpers/rewrite_rviz_config.sh`.
 - **Phase 6–7**: `Gotchas.md`, `verification/*`.
 
 This avoids loading 30k of cheat-sheet into context when you only need a header rewrite.
@@ -247,6 +250,6 @@ opinionated for ~20% (executors, lifecycle, callback groups, QoS). Get the mecha
 first, runnable, and only then think about whether to use multi-threaded executors or
 intra-process communication.
 
-**Version**: 1.0
+**Version**: 1.2
 **Target distro**: ROS2 Humble Hawksbill (works for Iron/Jazzy with notes)
-**Last Updated**: 2026-05-07
+**Last Updated**: 2026-05-09 (FAST-LIVO2_ROS2 case + gotchas #31–#39 + .rviz coverage #40)

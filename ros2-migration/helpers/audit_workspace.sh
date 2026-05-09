@@ -105,8 +105,12 @@ bold "==> Source seams (ROS1 patterns to migrate)"
 # NB: with grep -E, '|' is alternation (do NOT escape it).
 for pat in \
   'ros::Time::now|ros::Duration|ros::Rate|ros::ok|ros::spin' \
+  'ros::NodeHandle' \
+  'ros::Publisher|ros::Subscriber|ros::Timer|ros::ServiceServer|ros::ServiceClient' \
+  'nh\.advertise|nh\.subscribe|nh\.createTimer|nh\.param|nh\.getParam' \
   'tf::[A-Z]' \
   'ROS_INFO|ROS_WARN|ROS_ERROR|ROS_DEBUG|ROS_FATAL' \
+  'ROS_ASSERT' \
   'pluginlib::ClassLoader|nodelet::Nodelet' \
   'message_filters::Subscriber|message_filters::Synchronizer' \
   'actionlib::SimpleActionClient|actionlib::SimpleActionServer' \
@@ -117,11 +121,44 @@ for pat in \
   '<std_msgs/[A-Z][a-zA-Z]*\.h>' \
   '<geometry_msgs/[A-Z][a-zA-Z]*\.h>' \
   '<nav_msgs/[A-Z][a-zA-Z]*\.h>' \
-  '<visualization_msgs/[A-Z][a-zA-Z]*\.h>'
+  '<visualization_msgs/[A-Z][a-zA-Z]*\.h>' \
+  '<livox_ros_driver/[A-Z][a-zA-Z]*\.h>' \
+  'using namespace Sophus' \
+  '\.rotation_matrix\(\)' \
+  '<sophus/se3\.h>'
 do
   count=$(grep -rEl "$pat" "$ROOT" --include='*.h' --include='*.hpp' --include='*.cpp' --include='*.cc' 2>/dev/null | wc -l || true)
   printf "  %-60s  hits in %d file(s)\n" "$pat" "$count"
 done
+echo
+
+# ---- Half-ported fork detection (Gotcha #31) -----------------------------
+bold "==> Half-ported '*_ROS2' fork check"
+# Heuristic: package.xml uses ament_cmake but the source still has ros::NodeHandle.
+half_ported=()
+for p in "${PKGS[@]}"; do
+  if grep -qE '<buildtool_depend>\s*ament_cmake' "$p"; then
+    pkg_dir=$(dirname "$p")
+    rcount=$(grep -rE 'ros::NodeHandle|nh\.advertise|nh\.subscribe' "$pkg_dir" \
+              --include='*.h' --include='*.hpp' --include='*.cpp' --include='*.cc' 2>/dev/null | wc -l || true)
+    if [[ "$rcount" -gt 0 ]]; then
+      pname=$(grep -oE '<name>[^<]+</name>' "$p" | head -n1 | sed 's/<[^>]*>//g')
+      half_ported+=("$pname:$rcount")
+    fi
+  fi
+done
+if [[ ${#half_ported[@]} -gt 0 ]]; then
+  warn "Detected ${#half_ported[@]} package(s) with ament_cmake build but ROS1 API in source:"
+  for h in "${half_ported[@]}"; do
+    pname=${h%:*}; rcount=${h#*:}
+    printf "    \033[33m%-30s  %d ROS1 API site(s)\033[0m\n" "$pname" "$rcount"
+  done
+  echo "  These are likely half-ported '*_ROS2' forks. Budget realistically:"
+  echo "    < 50 sites:  light cleanup, do inline."
+  echo "    > 100 sites: substantial rewrite — see examples/fast-livo2-migration.md."
+else
+  echo "  No half-ported forks detected."
+fi
 echo
 
 # ---- Launch files ---------------------------------------------------------
@@ -130,6 +167,24 @@ mapfile -t LAUNCHES < <(find "$ROOT" -name '*.launch' -not -name '*.launch.py' -
 echo "  $(echo ${#LAUNCHES[@]}) ROS1-style .launch files"
 for l in "${LAUNCHES[@]:0:10}"; do echo "    - $l"; done
 [[ ${#LAUNCHES[@]} -gt 10 ]] && echo "    ... and $((${#LAUNCHES[@]} - 10)) more"
+echo
+
+# ---- RViz configs ---------------------------------------------------------
+bold "==> RViz config files (.rviz)"
+mapfile -t RVIZ < <(find "$ROOT" -name '*.rviz' -not -name '*.rviz.bak' 2>/dev/null | sort)
+echo "  ${#RVIZ[@]} .rviz file(s)"
+for r in "${RVIZ[@]:0:10}"; do
+  # Count ROS1-style class refs.
+  if [[ -r "$r" ]]; then
+    rcount=$(grep -cE '^[[:space:]]+Class: rviz/' "$r" 2>/dev/null || echo 0)
+    if [[ "$rcount" -gt 0 ]]; then
+      printf "    \033[33m%s\033[0m  (%d ROS1-class refs — run helpers/rewrite_rviz_config.sh)\n" "$r" "$rcount"
+    else
+      printf "    %s  (already clean)\n" "$r"
+    fi
+  fi
+done
+[[ ${#RVIZ[@]} -gt 10 ]] && echo "    ... and $((${#RVIZ[@]} - 10)) more"
 echo
 
 # ---- Plugin descriptors ---------------------------------------------------
